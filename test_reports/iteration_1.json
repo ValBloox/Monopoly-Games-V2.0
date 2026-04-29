@@ -1,0 +1,50 @@
+{
+  "summary": "Tested Monopoli Merdeka 1945 backend leaderboard endpoints (8/8 pytest passing) and frontend gameplay flow. Splash, Menu, Setup, Board screens all render correctly with wood-table aesthetic. 32 cells render. Dice roll & token movement work. CRITICAL BUG found: a tax cell (Hari Pahlawan id=21) can incorrectly trigger the BUY phase, causing player money to become NaN after the buy action.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Board.jsx / landOnCell or buyProperty",
+        "issue": "Player landed on tax cell 'Hari Pahlawan' (id=21, type='tax', amount=75) but ACTION_BUY phase was triggered. Clicking BELI executed buy on a tax cell with no `price` field => money - undefined = NaN. Toast log shows 'Soekarno membeli Hari Pahlawan' followed by two 'Soekarno bayar Hari Pahlawan ORI 75' messages, so tax was also paid twice. Player money panel displays 'ORI NaN' and the mini-prop card shows 'Hari Pahlawan ORI ' (price missing).",
+        "selector": "[data-testid=\"action-buy-btn\"], [data-testid=\"player-money-0\"]",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Setup", "issues": ["Token thumbnails on dark wood background look almost identical (very low chroma between tokens 0/1 (dark) — could improve color differentiation)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_leaderboard.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "FIX CRITICAL: Investigate why landOnCell/state-machine allows BUY phase to be set when current player position resolves to a tax cell. Likely root cause: stale closure of `cur` in ActionFooter or buyProperty where `cur = state.players[state.currentPlayer]` is captured from a render BEFORE the move animation finished updating positions, OR a race where setTimeout in landOnCell evaluates `s.players[pid]` before the last `moveSteps` setState batched in. Two concrete defensive fixes: (1) In `buyProperty()` and `buildHouse()`, validate `cell.type === 'property' || cell.type === 'railroad'` and `typeof cell.price === 'number'` before mutating money. (2) Replace `landOnCell(pid)` invocation immediately after `await moveSteps(...)` in `afterRoll` with a useEffect-driven resolver keyed on `state.players[pid].position` change so phase transitions always reflect committed React state.",
+    "FIX CRITICAL: Tax payment toast appears twice (`Soekarno bayar Hari Pahlawan ORI 75` shown 2x in the toast list within a single turn). Suggests landOnCell ran twice for the same landing — investigate moveSteps -> landOnCell sequencing.",
+    "Add unit test in /app/frontend covering `landOnCell` returning 'END_TURN' for any cell with `type === 'tax'`."
+  ],
+  "critical_code_review_comments": [
+    "Board.jsx is ~780 lines — should be split into Board container + ActionFooter + PlayerPanel + CardModal + QuizModal modules.",
+    "Closure hazard: `const cur = state.players[state.currentPlayer]` near top of `Board()` is used inside async handlers (`afterRoll`, `buyProperty`, `buildHouse`, `endTurn`). Refactor those handlers to read `s.players[s.currentPlayer]` inside `setState((s) => ...)` updaters to avoid stale state.",
+    "`afterRoll` reads `cur.inJail/jailTurns` and calls `updatePlayer(cur.id, ...)` then `await moveSteps(cur.id, total)` — but `cur` is the closure from render. If multiple state updates queue, jail logic can read stale values.",
+    "`buyProperty` and `buildHouse` do not guard `cell.type` or `cell.price`/`cell.building` being defined — caused the NaN crash above.",
+    "`drawCard` calls `setModal(...)` inside `setState` updater (a side-effect inside a pure updater). React may invoke updater twice in StrictMode, causing the modal/card to be mutated twice — should hoist setModal outside.",
+    "`landOnCell` has a `setStatsTracker` block at the top that uses stale `state.players[pid]` (closure) before the actual processing inside setTimeout — can drop wrong fact.",
+    "Backend server.py POST /api/leaderboard returns `response_model=LeaderboardEntry` but does not validate `rounds`, `money`, `properties_count`, `correct_answers >= 0`. Consider Pydantic constraints (ge=0).",
+    "Backend has no DELETE/cleanup endpoint for leaderboard test data — test pollution will accumulate."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_leaderboard.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "70%"},
+  "test_credentials": "N/A — no auth in this app",
+  "seed_data_creation": "Created 2 leaderboard rows (TEST_Soekarno KEMERDEKAAN, TEST_Hatta KLASIK) and 1 status row (TEST_client) via test suite. Safe to leave; prefixed TEST_.",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Backend (FastAPI) all 8 tests pass: GET /api/, GET/POST /api/leaderboard, validation errors, GET/POST /api/status. Reuse /app/backend/tests/test_leaderboard.py. Frontend flow Splash→Menu→Setup→Board verified end-to-end. The CRITICAL NaN bug reproduces reliably: start a 2-player game (Soekarno/Hatta, KEMERDEKAAN), click LEMPAR BAMBU once — within 1-2 rolls Soekarno will land on Hari Pahlawan tax cell (id=21, top row, 'Pajak ORI 75') yet a BELI button appears; clicking BELI sets money to NaN. After main agent applies a fix, retest with the same Playwright script in this iteration. Note: tested only 2-player KEMERDEKAAN mode; 3/4 player and KLASIK still untested. Card modal (PROKLAMASI/BHINNEKA) was not triggered in the 10 rolls observed; needs targeted test with controlled dice or scripted move. Quiz modal and Proklamasi flow likewise untested (require full property group ownership).",
+  "rca_of_the_issue": "Repro: 2-player KEMERDEKAAN game, roll dice repeatedly. When the active player's token lands on Hari Pahlawan (cell id=21, type='tax', amount=75, no `price`), the Board incorrectly transitions to phase 'ACTION_BUY' and the BELI/LEWATI buttons render. Clicking BELI calls `buyProperty()` which executes `cur.money - cell.price` => `1500 - undefined` => NaN, and pushes the cell into `player.properties`. Subsequent renders show 'ORI NaN' in the player panel, and the mini-prop-card lists 'Hari Pahlawan ORI ' (empty price). Two duplicate tax-payment toasts also appeared, suggesting `landOnCell` executed twice for the same landing event. Likely root causes (in Board.jsx): (1) stale closure on `cur` captured by ActionFooter/buyProperty before state finished committing; (2) race between `moveSteps`'s sequence of `setState`s and the 300ms `setTimeout` inside `landOnCell` resolving cell type from a stale snapshot; (3) absence of a defensive type-check in `buyProperty` allowing buy on non-property cells. Mitigations: read state inside `setState` updaters, validate `cell.type === 'property' || 'railroad'` and `typeof cell.price === 'number'` in buy/build handlers, and resolve landings in a useEffect keyed on the player's position rather than via setTimeout."
+}

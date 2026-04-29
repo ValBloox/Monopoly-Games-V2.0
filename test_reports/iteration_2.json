@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 2 retest. Backend 8/8 leaderboard tests PASS (re-verified). Code review of Board.jsx confirms all 6 fixes from iteration_1 action items are correctly applied (stateRef.current pattern, side-effects out of setState updaters, type guards on buy/build, ActionFooter isBuyable/isBuildable guards, drawCard hoisted setModal, applyCardAction routes to landOnCell). However, Playwright UI test could not transition past Setup→Board screen on this run; the MULAI PERJUANGAN button click was registered but the board did not render within 15s timeout (3 attempts, 3 different click strategies). Could not empirically confirm the tax-cell NaN fix end-to-end via UI in this iteration.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Setup screen → MULAI PERJUANGAN! → Board",
+        "issue": "Playwright click on MULAI PERJUANGAN! (with force=True, after waiting for selector visibility) did not transition to the board screen within 15s. This was reproducible across 3 attempts with different click strategies (direct button text, after explicit Mode Kemerdekaan card click, after only relying on default-selected DIREKOMENDASIKAN). The setup screen remained visible in subsequent screenshots. Could be a Playwright synthetic-event/focus issue (the SetupScreen onClick may rely on real pointer events) or a timing race with the setup form's player-name validation. iteration_1 testing agent reported successful traversal — possibly an environmental flake in this run.",
+        "affected_selectors": ["button:has-text(\"MULAI PERJUANGAN\")"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_leaderboard.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Main agent: please open the live preview manually and run the gameplay loop ~15-20 rolls to confirm: (1) tax cell (id=21 Hari Pahlawan, id=8 Bendungan Krisak) NEVER triggers BUY phase, (2) money never becomes NaN after any landing/buy, (3) tax payment toast appears exactly once per landing, (4) AKHIRI GILIRAN cycles between Soekarno and Hatta cleanly. The code-level fixes look comprehensive on review, but UI E2E was not reached this iteration.",
+    "Optional: add data-testid=\"setup-start-btn\" on the MULAI PERJUANGAN button in /app/frontend/src/screens/Setup.jsx (or wherever rendered) so future Playwright runs can target it deterministically and avoid text-based selectors that may be subject to font-loading/animation timing.",
+    "Optional: add data-testid=\"setup-mode-kemerdekaan\" and data-testid=\"setup-mode-klasik\" on the mode cards for the same reason."
+  ],
+  "critical_code_review_comments": [
+    "Board.jsx is still ~810 lines — should still be split per iteration_1 recommendation (Board container + ActionFooter + PlayerPanel + CardModal + QuizModal modules).",
+    "landOnCell uses setTimeout(200ms) to wait for moveSteps' setStates to commit before reading stateRef.current. Robust but couples timing to moveSteps' internal pacing (140ms × steps + 180ms wait = ~600-2000ms). If moveSteps is ever sped up or if React batches differently, this could become flaky again. A useEffect keyed on the player's `position` would be more deterministic.",
+    "applyCardAction's setTimeout(250ms) re-routing to landOnCell similarly relies on a fixed delay. Same concern.",
+    "answerQuiz still reads `state.players[modal.pid]` and `state.round` from closure (lines 401-407) instead of stateRef.current. Could capture stale state if a setState is in flight. Low impact since quiz happens at end-of-game but worth fixing.",
+    "drawCard mutates the deck via slice(1) + push(top) inside setState — this rotation is correct, but ensure StrictMode double-invocation doesn't double-rotate (test by inserting a known-card scenario).",
+    "Backend: still no DELETE/cleanup endpoint for leaderboard test data; TEST_-prefixed rows accumulate across test runs."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "code-review-only (UI E2E not completed)"},
+  "test_credentials": "N/A — no auth in this app",
+  "seed_data_creation": "Backend test suite created 2 leaderboard rows (TEST_Soekarno KEMERDEKAAN, TEST_Hatta KLASIK) and 1 status row (TEST_client). Cumulative across iterations.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 2 retest blocked at Setup→Board UI transition via Playwright. Backend leaderboard tests (8) all pass via /app/backend/tests/test_leaderboard.py. Code review of Board.jsx confirms all iteration_1 action items are applied: (a) stateRef.current pattern across afterRoll/buyProperty/buildHouse/tryProklamasi/endTurn (lines 80, 295, 317, 372, 346); (b) landOnCell computes side effects ONCE outside setState updater then commits with single setState (lines 144-225); (c) buyProperty/buildHouse have type guards rejecting non-property cells (lines 297-305, 319-325); (d) ActionFooter only renders BELI when isBuyable=property|railroad (lines 715, 725); (e) drawCard hoists setModal outside setState (lines 230-234); (f) applyCardAction re-routes to landOnCell after card-induced moves (lines 282-291). Strongly recommend the next testing agent: (1) add data-testid attributes to Setup mode cards and start button before retesting UI, (2) run the same 30-roll gameplay loop checking [data-testid=\"player-money-0/1\"] for NaN substring after every roll AND after every BELI/skip click, (3) collect [data-testid=\"toast\"] text content and verify no tax-cell toast (\"Hari Pahlawan\" or \"Bendungan Krisak\" + \"bayar\") appears more than once per turn, (4) verify [data-testid=\"action-buy-btn\"] is NEVER visible immediately after a tax-cell landing toast appears. Splash screen also has \"MULAI BERMAIN\" text which is identical to Menu's button — code shows two clicks may be needed (Splash→Menu→Setup).",
+  "rca_of_the_issue": "Iteration_1 root cause was identified as: stale closure on `cur` in render scope causing buyProperty/buildHouse to mutate money with stale state, plus landOnCell's setTimeout reading stale snapshots leading to double tax-toast and BUY-on-tax. iteration_2 code now reads via stateRef.current consistently (verified at lines 80, 144-148, 295, 317, 346, 372). landOnCell additionally guards against StrictMode double-invocation by computing patch/sfx/toast outside the setState updater and committing exactly once. ActionFooter renders BELI only when cell.type is property|railroad. buyProperty additionally validates cell.type and typeof cell.price === 'number' before mutating money — so even if the BUY button somehow appeared on a non-property cell, money would not become NaN. Fixes appear comprehensive at the code level. The one remaining theoretical risk: landOnCell's 200ms setTimeout couples to moveSteps' internal timing — if a future change shortens moveSteps without adjusting this, the original race could re-emerge. Recommendation: convert to a useEffect keyed on the active player's `position`."
+}
